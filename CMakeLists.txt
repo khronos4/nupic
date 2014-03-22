@@ -144,7 +144,7 @@ endmacro()
 # This macro generates a swig module
 macro(generate_swig_module name sub_dir swig_flags cxx_flags extra_source link_flags libraries)
   string(REPLACE " " ";" swig_flags ${swig_flags})
-  file(MAKE_DIRECTORY "${TEMP_BUILD_DIR}/${sub_dir}")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${sub_dir}")
 
   set(IMPLEMENTATION_FILE "${PROJECT_SOURCE_DIR}/${sub_dir}/${name}_py.i")
   set_source_files_properties(${IMPLEMENTATION_FILE} PROPERTIES CPLUSPLUS ON)
@@ -173,13 +173,6 @@ endmacro()
 ###  Configuration of the environment                                                                                    ###
 ###                                                                                                                      ###
 ############################################################################################################################
-
-#
-# Cannot have same $NTA and $NuPIC
-#
-if("$ENV{NTA}" STREQUAL "$ENV{NUPIC}")
-  message(FATAL_ERROR "\$NTA environment variable cannot be the same as the \$NUPIC environment variable!")
-endif()
 
 #
 # Set C++ compiler.
@@ -215,27 +208,11 @@ project(Nupic CXX)
 # Repository root is the parent directory which this CMake file is located
 # This CMake file must be always on /repository/src subdirectory.
 get_filename_component(REPOSITORY_DIR ${PROJECT_SOURCE_DIR} PATH)
-# 'release' is a subdirectory created on /build root,
-# but if it already is specified on $NTA environment variable, simply re-use it!
-if("$ENV{NTA}" STREQUAL "")
-  set(CMAKE_INSTALL_PREFIX "$ENV{HOME}/nta/eng")
-else()
-  set(CMAKE_INSTALL_PREFIX "$ENV{NTA}")
-endif()
-# 'ntabuild' is a subdirectory created on system temporary directory.
-if("${TEMP_BUILD_DIR}" STREQUAL "")
-  set(TEMP_BUILD_DIR "/tmp/ntabuild")
-endif()
-# CMAKE_CURRENT_BINARY_DIR is used by swig module for put wrappers on, so don't erase this line!
-set(CMAKE_CURRENT_BINARY_DIR ${TEMP_BUILD_DIR})
-
 #
 # Clean directories before generate files
 #
-# Clean '/build/release'
-execute_process(COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_INSTALL_PREFIX})
 # Clean '/tmp/ntabuild'
-execute_process(COMMAND ${CMAKE_COMMAND} -E remove_directory ${TEMP_BUILD_DIR})
+#execute_process(COMMAND ${CMAKE_COMMAND} -E remove_directory ${TEMP_BUILD_DIR})
 
 #
 # Update repository submodules
@@ -350,41 +327,43 @@ else()
   set(PYTHON "python")
 endif()
 
-execute_process(COMMAND ${PYTHON} --version
-                RESULT_VARIABLE EXIT_CODE)
-if(NOT EXIT_CODE EQUAL 0)
-  message(FATAL_ERROR "System Python not found. You do not have a system version of Python or it is not set on environment path.")
+if(NOT CMAKE_CROSSCOMPILING)
+  execute_process(COMMAND ${PYTHON} --version
+                  RESULT_VARIABLE EXIT_CODE)
+  if(NOT EXIT_CODE EQUAL 0)
+    message(FATAL_ERROR "System Python not found. You do not have a system version of Python or it is not set on environment path.")
+  endif()
+
+  #
+  # Gives the version of Python necessary to get installation directories
+  # for use with ${PYTHON_VERSION}, etc.
+  #
+  execute_process(COMMAND ${PYTHON} -c "import sys;sys.stdout.write(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))"
+                  OUTPUT_VARIABLE PYTHON_VERSION)
+  if(NOT(${PYTHON_VERSION} EQUAL "2.6" OR ${PYTHON_VERSION} EQUAL "2.7"))
+    message(FATAL_ERROR "Only these versions of Python are accepted: 2.6, 2.7")
+  endif()
+
+  #
+  # Find out where system installation of python is.
+  #
+  execute_process(COMMAND ${PYTHON} -c "import sys;sys.stdout.write(sys.prefix)"
+                  OUTPUT_VARIABLE PYTHON_PREFIX)
+  string(REGEX REPLACE "\\\\" "/" PYTHON_PREFIX ${PYTHON_PREFIX})
+  set(PYTHON_INCLUDE_DIR "${PYTHON_PREFIX}/include/python${PYTHON_VERSION}")
+  set(PYTHON_LIBRARY_DIR "${PYTHON_PREFIX}/lib/python${PYTHON_VERSION}")
+  set(PYTHON_SITE_PACKAGES_DIR "${CMAKE_INSTALL_PREFIX}/lib/python${PYTHON_VERSION}/site-packages")
+  find_package(PythonLibs ${PYTHON_VERSION} REQUIRED)
+
+  #
+  # Finds out version of Numpy and headers's path.
+  #
+  execute_process(COMMAND ${PYTHON} -c "import sys;import numpy;sys.stdout.write(numpy.get_include())"
+                  OUTPUT_VARIABLE NUMPY_INCLUDE_DIR)
+  string(REGEX REPLACE "\\\\" "/" NUMPY_INCLUDE_DIR ${NUMPY_INCLUDE_DIR})
+  execute_process(COMMAND ${PYTHON} -c "import sys;import numpy;sys.stdout.write(numpy.__version__)"
+                  OUTPUT_VARIABLE NUMPY_VERSION)
 endif()
-
-#
-# Gives the version of Python necessary to get installation directories
-# for use with ${PYTHON_VERSION}, etc.
-#
-execute_process(COMMAND ${PYTHON} -c "import sys;sys.stdout.write(str(sys.version_info[0]) + '.' + str(sys.version_info[1]))"
-                OUTPUT_VARIABLE PYTHON_VERSION)
-if(NOT(${PYTHON_VERSION} EQUAL "2.6" OR ${PYTHON_VERSION} EQUAL "2.7"))
-  message(FATAL_ERROR "Only these versions of Python are accepted: 2.6, 2.7")
-endif()
-
-#
-# Find out where system installation of python is.
-#
-execute_process(COMMAND ${PYTHON} -c "import sys;sys.stdout.write(sys.prefix)"
-                OUTPUT_VARIABLE PYTHON_PREFIX)
-string(REGEX REPLACE "\\\\" "/" PYTHON_PREFIX ${PYTHON_PREFIX})
-set(PYTHON_INCLUDE_DIR "${PYTHON_PREFIX}/include/python${PYTHON_VERSION}")
-set(PYTHON_LIBRARY_DIR "${PYTHON_PREFIX}/lib/python${PYTHON_VERSION}")
-set(PYTHON_SITE_PACKAGES_DIR "${CMAKE_INSTALL_PREFIX}/lib/python${PYTHON_VERSION}/site-packages")
-find_package(PythonLibs ${PYTHON_VERSION} REQUIRED)
-
-#
-# Finds out version of Numpy and headers's path.
-#
-execute_process(COMMAND ${PYTHON} -c "import sys;import numpy;sys.stdout.write(numpy.get_include())"
-                OUTPUT_VARIABLE NUMPY_INCLUDE_DIR)
-string(REGEX REPLACE "\\\\" "/" NUMPY_INCLUDE_DIR ${NUMPY_INCLUDE_DIR})
-execute_process(COMMAND ${PYTHON} -c "import sys;import numpy;sys.stdout.write(numpy.__version__)"
-                OUTPUT_VARIABLE NUMPY_VERSION)
 
 #
 # Checks if Swig is installed and gets its variables.
@@ -418,10 +397,10 @@ message(STATUS "  Version: ${SWIG_VERSION}")
 # First config output paths for the generic no-config case.
 # Second, for multi-config builds (DEBUG or RELEASE, for example).
 #
-set(CMAKE_SWIG_OUTDIR "${PYTHON_SITE_PACKAGES_DIR}/nupic/bindings")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${TEMP_BUILD_DIR}/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_INSTALL_PREFIX}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_INSTALL_PREFIX}/lib)
+set(CMAKE_SWIG_OUTDIR "${CMAKE_CURRENT_BINARY_DIR}/nupic/bindings")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib)
 foreach(OUTPUTCONFIG ${CMAKE_CONFIGURATION_TYPES})
   string(TOUPPER ${OUTPUTCONFIG} OUTPUTCONFIG)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${OUTPUTCONFIG} ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
@@ -463,7 +442,7 @@ message(STATUS "Project: ${PROJECT_NAME}")
 message(STATUS "Locations:")
 message(STATUS "  Source: ${PROJECT_SOURCE_DIR}")
 message(STATUS "  Build System: ${PROJECT_BINARY_DIR}")
-message(STATUS "  Build Directory: ${TEMP_BUILD_DIR}")
+message(STATUS "  Build Directory: ${CMAKE_CURRENT_BINARY_DIR}")
 message(STATUS "  Release: ${CMAKE_INSTALL_PREFIX}")
 
 
@@ -479,18 +458,25 @@ message(STATUS "  Release: ${CMAKE_INSTALL_PREFIX}")
 # Allows us to find includes for external libraries and enables
 # #include <nta/common/...>
 #
-set(NTA_INCLUDEFLAGS "-I${PROJECT_SOURCE_DIR} -isystem${PROJECT_SOURCE_DIR}/external/common/include -isystem${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/include")
-
+if(NOT CMAKE_CROSSCOMPILING)
+  set(NTA_INCLUDEFLAGS "-I${PROJECT_SOURCE_DIR} -isystem${PROJECT_SOURCE_DIR}/external/common/include -isystem${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/include")
+else()
+  set(NTA_INCLUDEFLAGS "-I${PROJECT_SOURCE_DIR}")
+endif()
 #
 # NTA_INTERNAL tells us that the code is being built under the build system
 # and not as a separate program. Used for cppvision example.
 #
-set(NTA_CXXFLAGS_BASE "${NTA_INCLUDEFLAGS} ${NTA_PLATFORM_CXXFLAGS} -DHAVE_CONFIG_H -DNTA_INTERNAL -DNTA_PLATFORM_${NTA_PLATFORM_OS} -DBOOST_NO_WREGEX -DNUPIC2 -fvisibility=hidden -Wall -Wreturn-type -Wunused -Wno-unused-parameter")
+set(NTA_CXXFLAGS_BASE "${NTA_INCLUDEFLAGS} ${NTA_PLATFORM_CXXFLAGS} -DHAVE_CONFIG_H -DNTA_INTERNAL -DNTA_PLATFORM_${NTA_PLATFORM_OS} -DBOOST_NO_WREGEX -DNUPIC2 -fvisibility=hidden -Wall -Wreturn-type -Wunused -Wno-unused-parameter -Wno-error=narrowing")
 
 #
 # All executables and plugins are linked with these flags
 #
-set(NTA_LINKFLAGS "${NTA_PLATFORM_LINKFLAGS} ${NTA_PLATFORM_LIBS} -L${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib")
+if(NOT CMAKE_CROSSCOMPILING)
+  set(NTA_LINKFLAGS "${NTA_PLATFORM_LINKFLAGS} ${NTA_PLATFORM_LIBS} -L${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib")
+else()
+  set(NTA_LINKFLAGS "${NTA_PLATFORM_LINKFLAGS} ${NTA_PLATFORM_LIBS}")
+endif()
 
 #
 # Define custom preprocessor variables (#define XX in C++ code)
@@ -589,7 +575,11 @@ endif()
 #
 if(NTA_PYTHON_SUPPORT)
 
-  set(NTA_SWIG_FLAGS "${NTA_SWIG_FLAGS} -features autodoc=0,directors=0 -noproxyimport -keyword -modern -modernargs -noproxydel -fvirtual -fastunpack -nofastproxy -fastquery -outputtuple -castmode -w402 -w503 -w511 -w302 -w362 -w312 -w389 -DNTA_PLATFORM_${NTA_PLATFORM_OS} -DNTA_PYTHON_SUPPORT=${PYTHON_VERSION} -I${PROJECT_SOURCE_DIR} -I${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/include -I${NUMPY_INCLUDE_DIR} -I${SWIG_DIR}/python -I${SWIG_DIR}")
+  if(NOT CMAKE_CROSSCOMPILING)
+    set(NTA_SWIG_FLAGS "${NTA_SWIG_FLAGS} -features autodoc=0,directors=0 -noproxyimport -keyword -modern -modernargs -noproxydel -fvirtual -fastunpack -nofastproxy -fastquery -outputtuple -castmode -w402 -w503 -w511 -w302 -w362 -w312 -w389 -DNTA_PLATFORM_${NTA_PLATFORM_OS} -DNTA_PYTHON_SUPPORT=${PYTHON_VERSION} -I${PROJECT_SOURCE_DIR} -I${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/include -I${NUMPY_INCLUDE_DIR} -I${SWIG_DIR}/python -I${SWIG_DIR}")
+  else()
+    set(NTA_SWIG_FLAGS "${NTA_SWIG_FLAGS} -features autodoc=0,directors=0 -noproxyimport -keyword -modern -modernargs -noproxydel -fvirtual -fastunpack -nofastproxy -fastquery -outputtuple -castmode -w402 -w503 -w511 -w302 -w362 -w312 -w389 -DNTA_PLATFORM_${NTA_PLATFORM_OS} -DNTA_PYTHON_SUPPORT=${PYTHON_VERSION} -I${PROJECT_SOURCE_DIR} -I${NUMPY_INCLUDE_DIR} -I${SWIG_DIR}/python -I${SWIG_DIR}")
+  endif()
   string(REPLACE " " ";" NTA_SWIG_FLAGS ${NTA_SWIG_FLAGS})
 
   # Minimal functional subset
@@ -605,7 +595,11 @@ if(NTA_PYTHON_SUPPORT)
 
   set(NTA_LINKFLAGS_PYEMBED "${NTA_PLATFORM_LINKFLAGS_PYEMBED} ${NTA_LINKFLAGS_PY}")
 
-  set(NTA_LINKFLAGS_PYMODULE "${NTA_PLATFORM_LINKFLAGS_PYMODULE} ${NTA_LINKFLAGS_PY} ${NTA_PLATFORM_LIBS} -L${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib")
+  if(NOT CMAKE_CROSSCOMPILING)
+    set(NTA_LINKFLAGS_PYMODULE "${NTA_PLATFORM_LINKFLAGS_PYMODULE} ${NTA_LINKFLAGS_PY} ${NTA_PLATFORM_LIBS} -L${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib")
+  else()
+    set(NTA_LINKFLAGS_PYMODULE "${NTA_PLATFORM_LINKFLAGS_PYMODULE} ${NTA_LINKFLAGS_PY} ${NTA_PLATFORM_LIBS}")
+  endif()
 
 endif()
 
@@ -630,37 +624,46 @@ set(CURRENT_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 #
 # Apache's external libraries.
 #
-set(LIB_STATIC_APR1 apr-1)
-add_library(${LIB_STATIC_APR1} STATIC IMPORTED)
-set_property(TARGET ${LIB_STATIC_APR1} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libapr-1.${STATIC_LIB_EXTENSION}")
+if(NOT CMAKE_CROSSCOMPILING)
+  set(LIB_STATIC_APR1 apr-1)
+  add_library(${LIB_STATIC_APR1} STATIC IMPORTED)
+  set_property(TARGET ${LIB_STATIC_APR1} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libapr-1.${STATIC_LIB_EXTENSION}")
 
-set(LIB_STATIC_APRUTIL1 aprutil-1)
-add_library(${LIB_STATIC_APRUTIL1} STATIC IMPORTED)
-set_property(TARGET ${LIB_STATIC_APRUTIL1} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libaprutil-1.${STATIC_LIB_EXTENSION}")
+  set(LIB_STATIC_APRUTIL1 aprutil-1)
+  add_library(${LIB_STATIC_APRUTIL1} STATIC IMPORTED)
+  set_property(TARGET ${LIB_STATIC_APRUTIL1} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libaprutil-1.${STATIC_LIB_EXTENSION}")
 
-set(LIB_STATIC_Z z)
-add_library(${LIB_STATIC_Z} STATIC IMPORTED)
-set_property(TARGET ${LIB_STATIC_Z} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libz.${STATIC_LIB_EXTENSION}")
+  set(LIB_STATIC_Z z)
+  add_library(${LIB_STATIC_Z} STATIC IMPORTED)
+  set_property(TARGET ${LIB_STATIC_Z} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libz.${STATIC_LIB_EXTENSION}")
 
-set(LIB_STATIC_YAML yaml)
-add_library(${LIB_STATIC_YAML} STATIC IMPORTED)
-set_property(TARGET ${LIB_STATIC_YAML} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libyaml.${STATIC_LIB_EXTENSION}")
+  set(LIB_STATIC_YAML yaml)
+  add_library(${LIB_STATIC_YAML} STATIC IMPORTED)
+  set_property(TARGET ${LIB_STATIC_YAML} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libyaml.${STATIC_LIB_EXTENSION}")
 
-if(WINDOWS)
-  set(LIB_STATIC_PCRE pcre)
-  add_library(${LIB_STATIC_PCRE} STATIC IMPORTED)
-  set_property(TARGET ${LIB_STATIC_PCRE} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libpcre.${STATIC_LIB_EXTENSION}")
+  if(WINDOWS)
+    set(LIB_STATIC_PCRE pcre)
+    add_library(${LIB_STATIC_PCRE} STATIC IMPORTED)
+    set_property(TARGET ${LIB_STATIC_PCRE} PROPERTY IMPORTED_LOCATION "${PROJECT_SOURCE_DIR}/external/${NTA_PLATFORM_OS}/lib/libpcre.${STATIC_LIB_EXTENSION}")
+  endif()
+
+  #
+  # Set list of external libraries to this project.
+  #
+  set(NTA_STANDARD_LIBS 
+    ${LIB_STATIC_YAML}
+    ${LIB_STATIC_APRUTIL1}
+    ${LIB_STATIC_APR1}
+    ${LIB_STATIC_Z}
+  )
+else()
+  set(NTA_STANDARD_LIBS 
+    ${NUPIC_LIB_APR1}
+    ${NUPIC_LIB_APRUTIL1}
+    ${NUPIC_LIB_Z}
+    ${NUPIC_LIB_YAML}
+  )
 endif()
-
-#
-# Set list of external libraries to this project.
-#
-set(NTA_STANDARD_LIBS 
-  ${LIB_STATIC_YAML}
-  ${LIB_STATIC_APRUTIL1}
-  ${LIB_STATIC_APR1}
-  ${LIB_STATIC_Z}
-)
 
 #
 # LibSupport
@@ -1119,46 +1122,56 @@ file(WRITE "${PROJECT_SOURCE_DIR}/qa/testeverything/everything_addtests.hpp" "${
 file(WRITE "${PROJECT_SOURCE_DIR}/qa/testeverything/everything_headers.hpp" "${headers_file_content}")
 
 # Copy platform independent executable scripts
-copy_file(${PROJECT_SOURCE_DIR}/lang/py/bindings/__init__.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/bindings/__init__.py)
+install(FILES ${PROJECT_SOURCE_DIR}/lang/py/bindings/__init__.py DESTINATION nupic/bindings)
 
 # Copy the pieces of nupic that we want
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/algorithms ${PYTHON_SITE_PACKAGES_DIR}/nupic/algorithms)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/frameworks ${PYTHON_SITE_PACKAGES_DIR}/nupic/frameworks)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/image ${PYTHON_SITE_PACKAGES_DIR}/nupic/image)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/research ${PYTHON_SITE_PACKAGES_DIR}/nupic/research)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/data ${PYTHON_SITE_PACKAGES_DIR}/nupic/data)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/database ${PYTHON_SITE_PACKAGES_DIR}/nupic/database)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/swarming ${PYTHON_SITE_PACKAGES_DIR}/nupic/swarming)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/encoders ${PYTHON_SITE_PACKAGES_DIR}/nupic/encoders)
-copy_directory(${PROJECT_SOURCE_DIR}/py/nupic/support ${PYTHON_SITE_PACKAGES_DIR}/nupic/support)
-copy_directory(${PROJECT_SOURCE_DIR}/py/regions         ${PYTHON_SITE_PACKAGES_DIR}/nupic/regions)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/algorithms   DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/frameworks   DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/image        DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/research     DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/data         DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/database     DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/swarming     DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/encoders     DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/nupic/support      DESTINATION nupic)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/py/regions            DESTINATION nupic)
 
 # Copy math libraries. Much of the stuff in nupic.math is old cruft. Get just what we want
-copy_file(${PROJECT_SOURCE_DIR}/py/nupic/math/__init__.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/math/__init__.py)
-copy_file(${PROJECT_SOURCE_DIR}/py/nupic/math/cross.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/math/cross.py)
-copy_file(${PROJECT_SOURCE_DIR}/py/nupic/math/roc_utils.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/math/roc_utils.py)
+install(FILES 
+  ${PROJECT_SOURCE_DIR}/py/nupic/math/__init__.py 
+  ${PROJECT_SOURCE_DIR}/py/nupic/math/cross.py
+  ${PROJECT_SOURCE_DIR}/py/nupic/math/roc_utils.py
+DESTINATION nupic/math)
 
 # Copy examples
-copy_directory(${PROJECT_SOURCE_DIR}/examples/prediction ${CMAKE_INSTALL_PREFIX}/share/prediction)
-copy_directory(${PROJECT_SOURCE_DIR}/examples/opf ${CMAKE_INSTALL_PREFIX}/share/opf)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/examples/prediction   DESTINATION share)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/examples/opf          DESTINATION share)
 
 # Copy testing codes
-copy_directory(${PROJECT_SOURCE_DIR}/qa/shared_data ${CMAKE_INSTALL_PREFIX}/share/test/data)
-copy_directory(${PROJECT_SOURCE_DIR}/tests ${CMAKE_INSTALL_PREFIX}/tests)
-copy_file(${PROJECT_SOURCE_DIR}/run_tests.sh ${CMAKE_INSTALL_PREFIX}/bin/run_tests.sh)
-copy_file(${PROJECT_SOURCE_DIR}/bin/run_tests.py ${CMAKE_INSTALL_PREFIX}/bin/run_tests.py)
-copy_file(${PROJECT_SOURCE_DIR}/bin/run_swarm.py ${CMAKE_INSTALL_PREFIX}/bin/run_swarm.py)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/qa/shared_data/       DESTINATION share/test/data)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/tests/                DESTINATION tests)
+install(FILES 
+  ${PROJECT_SOURCE_DIR}/run_tests.sh
+  ${PROJECT_SOURCE_DIR}/bin/run_tests.py
+  ${PROJECT_SOURCE_DIR}/bin/run_swarm.py
+DESTINATION bin)
 
 # Copy miscellaneous files
-copy_directory(${PROJECT_SOURCE_DIR}/external/licenses ${CMAKE_INSTALL_PREFIX}/share/doc/licenses)
-copy_file(${PROJECT_SOURCE_DIR}/conf/default/nupic-default.xml ${CMAKE_INSTALL_PREFIX}/conf/default/nupic-default.xml)
-copy_file(${PROJECT_SOURCE_DIR}/conf/default/nupic-logging.conf ${CMAKE_INSTALL_PREFIX}/conf/default/nupic-logging.conf)
-copy_file(${PROJECT_SOURCE_DIR}/env.sh ${CMAKE_INSTALL_PREFIX}/env.sh)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/external/licenses     DESTINATION share/doc)
+install(FILES 
+  ${PROJECT_SOURCE_DIR}/conf/default/nupic-default.xml
+  ${PROJECT_SOURCE_DIR}/conf/default/nupic-logging.conf
+DESTINATION conf/default)
+install(FILES ${PROJECT_SOURCE_DIR}/env.sh                    DESTINATION ${CMAKE_INSTALL_PREFIX})
 
 # Copy python API and regions
-copy_file(${PROJECT_SOURCE_DIR}/lang/py/__init__.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/__init__.py)
+install(FILES ${PROJECT_SOURCE_DIR}/lang/py/__init__.py       DESTINATION nupic)
 # This file is going to be replaced by a "documentored" version
-copy_file(${PROJECT_SOURCE_DIR}/lang/py/engine/__init__.py ${PYTHON_SITE_PACKAGES_DIR}/nupic/engine/__init__.py)
+install(FILES ${PROJECT_SOURCE_DIR}/lang/py/engine/__init__.py DESTINATION nupic/engine)
+
+install(DIRECTORY ${CMAKE_SWIG_OUTDIR}/                       DESTINATION nupic/bindings)
+install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib             DESTINATION ${CMAKE_INSTALL_PREFIX})
+install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin             DESTINATION ${CMAKE_INSTALL_PREFIX})
 
 # Just to separate from result message
 message(STATUS "")
